@@ -2,6 +2,7 @@ import numpy as np
 
 from astropy import units as u
 from astropy import constants as const
+from astropy import uncertainty as unc
 
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, SkyOffsetFrame, EarthLocation
@@ -41,33 +42,29 @@ def get_earth_pars(coord_equat):
     return earth_pars
 
 
-def gen_d_p():
+def get_d_p_distrib(n_samples):
 
-    d_p = 156.79 * u.pc
+    d_p = unc.normal(156.79*u.pc, std=0.25*u.pc, n_samples=n_samples)
 
     return d_p
 
 
-def gen_free_pars():
+def gen_free_pars_sets(nmc):
 
-    omega_p = 207. * u.deg
-    d_p = gen_d_p()
-    s = 0.422157025
-    xi = 134.6 * u.deg
-    v_lens = -31.9 * u.km / u.s
+    omega_p = unc.uniform(lower=0.*u.deg, upper=360.*u.deg, n_samples=nmc)
+    d_p = get_d_p_distrib(nmc)
+    s = unc.uniform(lower=0., upper=1., n_samples=nmc)
+    xi = unc.uniform(lower=0.*u.deg, upper=360.*u.deg, n_samples=nmc)
+    v_lens = unc.normal(0.*u.km/u.s, std=20.*u.km/u.s, n_samples=nmc)
 
-    free_pars = {
-        'omega_p':  omega_p,
-        'd_p':      d_p,
-        's':        s,
-        'xi':       xi,
-        'v_lens':   v_lens,
-    }
-
-    return free_pars
+    return (omega_p.distribution,
+            d_p.distribution,
+            s.distribution,
+            xi.distribution,
+            v_lens.distribution)
 
 
-def gen_dveff_signed(free_pars, fixed_pars, sin_cos_ph, v_earth_xyz):
+def gen_dveff_signed(free_pars, fixed_pars, sin_cos_ph, v_e_xyz):
 
     psr_coord = fixed_pars['psr_coord']
     k_p = fixed_pars['k_p']
@@ -97,19 +94,18 @@ def gen_dveff_signed(free_pars, fixed_pars, sin_cos_ph, v_earth_xyz):
 
     v_p = v_p_sys + v_p_orb
 
-    v_earth = (v_earth_xyz[1] * sin_xi + v_earth_xyz[2] * cos_xi)
+    v_e = (v_e_xyz[1] * sin_xi + v_e_xyz[2] * cos_xi)
 
-    v_eff = 1. / s * v_lens - ((1. - s) / s) * v_p - v_earth
+    v_eff = 1. / s * v_lens - ((1. - s) / s) * v_p - v_e
 
     dveff_signed = v_eff / np.sqrt(d_eff)
 
     return dveff_signed
 
 
-def gen_dveff_abs(free_pars, fixed_pars, sin_cos_ph, v_earth_xyz):
+def gen_dveff_abs(free_pars, fixed_pars, sin_cos_ph, v_e_xyz):
 
-    dveff_signed = gen_dveff_signed(free_pars, fixed_pars,
-                                    sin_cos_ph, v_earth_xyz)
+    dveff_signed = gen_dveff_signed(free_pars, fixed_pars, sin_cos_ph, v_e_xyz)
 
     dveff_abs = np.abs(dveff_signed)
 
@@ -133,41 +129,53 @@ def mdl_dveff_fit(sin_cos_ph, *fit_pars):
     return dveff
 
 
-def get_i_p(popt, pcov, fixed_pars):
+def get_i_p(amp_means, amp_covar, fixed_pars, n_samples):
 
-    amp_es, amp_ec, amp_ps, amp_pc, dveff_c = popt
+    amp_distrib = np.random.multivariate_normal(amp_means, amp_covar,
+                                                size=n_samples)
+    amp_es = unc.Distribution(amp_distrib[:, 0] * u.km/u.s/u.pc**0.5)
+    amp_ec = unc.Distribution(amp_distrib[:, 1] * u.km/u.s/u.pc**0.5)
+    amp_ps = unc.Distribution(amp_distrib[:, 2] * u.km/u.s/u.pc**0.5)
+    amp_pc = unc.Distribution(amp_distrib[:, 3] * u.km/u.s/u.pc**0.5)
 
-    amp_e = np.sqrt(amp_es**2 + amp_ec**2) * u.km/u.s/u.pc**0.5
-    amp_p = np.sqrt(amp_ps**2 + amp_pc**2) * u.km/u.s/u.pc**0.5
-    chi_e = np.arctan2(amp_ec, amp_es) * u.rad
-    chi_p = np.arctan2(amp_pc, amp_ps) * u.rad
+    d_p = get_d_p_distrib(n_samples)
 
+    k_p = fixed_pars['k_p']
     earth_pars = fixed_pars['earth_pars']
     i_e = earth_pars['i_e']
     v_0_e = earth_pars['v_0_e']
 
-    d_p = gen_d_p()
+    amp2_e = amp_es**2 + amp_ec**2
+    amp2_p = amp_ps**2 + amp_pc**2
+    cos2_chi_e = amp_es**2 / amp2_e
+    cos2_chi_p = amp_ps**2 / amp2_p
 
-    b2_e = (1. - np.sin(i_e)**2) / (1. - np.sin(i_e)**2 * np.cos(chi_e)**2)
-    z2 = b2_e * (v_0_e * k_p / (amp_e * amp_p * d_p))**2
-    cos2_chi_p = np.cos(chi_p)**2
+    b2_e = (1. - np.sin(i_e)**2) / (1. - np.sin(i_e)**2 * cos2_chi_e)
+    z2 = b2_e / (amp2_e * amp2_p) * (v_0_e * k_p / d_p)**2
     discrim = (1. + z2)**2 - 4. * cos2_chi_p * z2
-    sin2_i_p = ((1. + z2 - np.sqrt(discrim)) / (2. * cos2_chi_p))
-    sin_i_p = np.sqrt(sin2_i_p)
+    sin2_i_p = 2. * z2 / (1. + z2 + np.sqrt(discrim))
+    sin_i_p = np.sqrt(sin2_i_p).to(u.dimensionless_unscaled)
 
-    return sin_i_p
+    return sin_i_p.distribution
 
 
-def do_i_p(fixed_pars, sin_cos_ph, v_earth_xyz, dveff_err, nmc):
+def do_i_p(fixed_pars, sin_cos_ph, v_e_xyz, dveff_err, nmc, n_samples):
 
-    sin_i_p_fit = np.zeros(nmc)
+    omega_p_set, d_p_set, s_set, xi_set, v_lens_set = gen_free_pars_sets(nmc)
 
-    for j in trange(nmc):
+    sin_i_p_fit = np.zeros((nmc, n_samples))
 
-        free_pars = gen_free_pars()
+    for j in trange(nmc, delay=0.2):
 
-        dveff = gen_dveff_abs(free_pars, fixed_pars,
-                              sin_cos_ph, v_earth_xyz)
+        free_pars = {
+            'omega_p':  omega_p_set[j],
+            'd_p':      d_p_set[j],
+            's':        s_set[j],
+            'xi':       xi_set[j],
+            'v_lens':   v_lens_set[j],
+        }
+
+        dveff = gen_dveff_abs(free_pars, fixed_pars, sin_cos_ph, v_e_xyz)
 
         dveff_obs = dveff + dveff_err * np.random.normal(size=len(dveff))
 
@@ -176,24 +184,17 @@ def do_i_p(fixed_pars, sin_cos_ph, v_earth_xyz, dveff_err, nmc):
         popt, pcov = curve_fit(mdl_dveff_fit, sin_cos_ph, dveff_obs.value,
                                p0=init_guess)
 
-        sin_i_p_fit[j] = get_i_p(popt, pcov, fixed_pars)
+        sin_i_p_fit[j, :] = get_i_p(popt, pcov, fixed_pars, n_samples)
 
-    return sin_i_p_fit
+    return omega_p_set, d_p_set, s_set, xi_set, v_lens_set, sin_i_p_fit
 
 
-if __name__ == '__main__':
+def feasibility(psr_coord, p_orb_p, asini_p, t_asc_p, i_p_to_try,
+                obs_loc, t_obs, dveff_err, nmc, n_samples):
 
-    print('started')
+    print('Started!')
 
     # pulsar parameters
-
-    psr_coord = SkyCoord('04h37m15.99744s -47d15m09.7170s',
-                         pm_ra_cosdec=121.4385 * u.mas / u.yr,
-                         pm_dec=-71.4754 * u.mas / u.yr)
-
-    p_orb_p = 5.7410459 * u.day
-    asini_p = 3.3667144 * const.c * u.s
-    t_asc_p = Time(54501.4671, format='mjd', scale='tdb')
 
     k_p = 2.*np.pi * asini_p / p_orb_p
 
@@ -201,25 +202,13 @@ if __name__ == '__main__':
 
     earth_pars = get_earth_pars(psr_coord)
 
-    # observation parameters
-
-    obs_loc = EarthLocation('148°15′47″E', '32°59′52″S')
-
-    np.random.seed(654321)
-    nt = 2645
-    dt_mean = 16.425 * u.yr / nt
-    dt = np.random.random(nt) * 2. * dt_mean
-    t = Time(52618., format='mjd') + dt.cumsum()
-
-    dveff_err = 0.05 * u.km/u.s/u.pc**0.5
-
     # independent variables
 
     p_orb_e = earth_pars['p_orb_e']
     t_asc_e = earth_pars['t_asc_e']
 
-    ph_e = ((t - t_asc_e) / p_orb_e).to(u.dimensionless_unscaled) * u.cycle
-    ph_p = ((t - t_asc_p) / p_orb_p).to(u.dimensionless_unscaled) * u.cycle
+    ph_e = ((t_obs - t_asc_e) / p_orb_e).to(u.dimensionless_unscaled) * u.cycle
+    ph_p = ((t_obs - t_asc_p) / p_orb_p).to(u.dimensionless_unscaled) * u.cycle
 
     sin_cos_ph = np.array([
         np.sin(ph_e).value,
@@ -230,11 +219,7 @@ if __name__ == '__main__':
 
     psr_frame = SkyOffsetFrame(origin=psr_coord)
 
-    v_earth_xyz = obs_loc.get_gcrs(t).transform_to(psr_frame).velocity.d_xyz
-
-    # MC parameters
-
-    nmc = 1000
+    v_e_xyz = obs_loc.get_gcrs(t_obs).transform_to(psr_frame).velocity.d_xyz
 
     # gather parameters that are known and fixed
 
@@ -247,21 +232,84 @@ if __name__ == '__main__':
         'earth_pars':   earth_pars,
     }
 
-    # loop over inclinations
+    # loop through i_p values to test
 
-    for i_p in [60., 70.] * u.deg:
+    ni_p = len(i_p_to_try)
+    omega_p_set = np.zeros((ni_p, nmc))
+    d_p_set = np.zeros((ni_p, nmc))
+    s_set = np.zeros((ni_p, nmc))
+    xi_set = np.zeros((ni_p, nmc))
+    v_lens_set = np.zeros((ni_p, nmc))
+    sin_i_p_fit = np.zeros((ni_p, nmc, n_samples))
 
-        print(f'inclination: {i_p:.1f}')
+    for idx, i_p in enumerate(i_p_to_try):
+
+        print(f'Simulating i_p = {i_p}')
 
         fixed_pars['cos_i_p'] = np.cos(i_p)
 
-        sin_i_p_fit = do_i_p(fixed_pars, sin_cos_ph, v_earth_xyz, dveff_err,
-                             nmc)
+        (omega_p_set[idx, :],
+         d_p_set[idx, :],
+         s_set[idx, :],
+         xi_set[idx, :],
+         v_lens_set[idx, :],
+         sin_i_p_fit[idx, ...]) = do_i_p(fixed_pars, sin_cos_ph, v_e_xyz,
+                                         dveff_err, nmc, n_samples)
 
-        sin_i_p_avg = np.mean(sin_i_p_fit)
-        sin_i_p_std = np.std(sin_i_p_fit)
+    return omega_p_set, d_p_set, s_set, xi_set, v_lens_set, sin_i_p_fit
 
-        print(sin_i_p_avg)
-        print(sin_i_p_std)
 
-        print((np.arcsin(sin_i_p_avg) * u.rad).to(u.deg))
+if __name__ == '__main__':
+
+    # pulsar parameters
+
+    psr_coord = SkyCoord('04h37m15.99744s -47d15m09.7170s',
+                         pm_ra_cosdec=121.4385 * u.mas / u.yr,
+                         pm_dec=-71.4754 * u.mas / u.yr)
+
+    p_orb_p = 5.7410459 * u.day
+    asini_p = 3.3667144 * const.c * u.s
+    t_asc_p = Time(54501.4671, format='mjd', scale='tdb')
+
+    # observation parameters
+
+    obs_loc = EarthLocation('148°15′47″E', '32°59′52″S')
+
+    np.random.seed(654321)
+    nt = 2645
+    dt_mean = 16.425 * u.yr / nt
+    dt = np.random.random(nt) * 2. * dt_mean
+    t_obs = Time(52618., format='mjd') + dt.cumsum()
+
+    dveff_err = 0.05 * u.km/u.s/u.pc**0.5
+
+    # MC parameters
+
+    nmc = 1000
+    n_samples = 1000
+
+    i_p_to_try = [137.56] * u.deg
+
+    (omega_p_set,
+     d_p_set,
+     s_set,
+     xi_set,
+     v_lens_set,
+     sin_i_p_fit) = feasibility(psr_coord, p_orb_p, asini_p, t_asc_p,
+                                i_p_to_try, obs_loc, t_obs, dveff_err,
+                                nmc, n_samples)
+
+    for idx, i_p in enumerate(i_p_to_try):
+
+        sin_i_p_avg = np.mean(sin_i_p_fit[idx, ...])
+        sin_i_p_std = np.std(sin_i_p_fit[idx, ...])
+
+        print(f'sin(i_p) = {sin_i_p_avg:.2f} +/- {sin_i_p_std:.2f}')
+
+        i_p_fit = (np.arcsin(sin_i_p_fit[idx, ...]) * u.rad).to(u.deg)
+
+        i_p_avg = np.mean(i_p_fit)
+        i_p_std = np.std(i_p_fit)
+
+        print(f'i_p = {i_p_avg.to_value(u.deg):.2f}'
+              f' +/- {i_p_std.to_value(u.deg):.2f} deg')
