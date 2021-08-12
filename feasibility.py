@@ -49,10 +49,10 @@ def get_d_p_distrib(n_samples):
     return d_p
 
 
-def gen_free_pars_sets(nmc):
+def gen_free_pars(d_p_fn, nmc):
 
     omega_p = unc.uniform(lower=0.*u.deg, upper=360.*u.deg, n_samples=nmc)
-    d_p = get_d_p_distrib(nmc)
+    d_p = d_p_fn(nmc)
     s = unc.uniform(lower=0., upper=1., n_samples=nmc)
     xi = unc.uniform(lower=0.*u.deg, upper=360.*u.deg, n_samples=nmc)
     v_lens = unc.normal(0.*u.km/u.s, std=20.*u.km/u.s, n_samples=nmc)
@@ -68,7 +68,7 @@ def gen_dveff_signed(free_pars, fixed_pars, sin_cos_ph, v_e_xyz):
 
     psr_coord = fixed_pars['psr_coord']
     k_p = fixed_pars['k_p']
-    cos_i_p = fixed_pars['cos_i_p']
+    sin_i_p = fixed_pars['sin_i_p']
 
     omega_p = free_pars['omega_p']
     d_p = free_pars['d_p']
@@ -79,7 +79,7 @@ def gen_dveff_signed(free_pars, fixed_pars, sin_cos_ph, v_e_xyz):
     sin_ph_p = sin_cos_ph[2, :]
     cos_ph_p = sin_cos_ph[3, :]
 
-    sin_i_p = np.sqrt(1. - cos_i_p**2)
+    cos_i_p = np.sqrt(1. - sin_i_p**2)
     sin_xi = np.sin(xi)
     cos_xi = np.cos(xi)
     delta_omega_p = xi - omega_p
@@ -124,12 +124,12 @@ def mdl_dveff_fit(sin_cos_ph, *fit_pars):
     dveff_e = amp_es * sin_ph_e - amp_ec * cos_ph_e
     dveff_p = amp_ps * sin_ph_p - amp_pc * cos_ph_p
 
-    dveff = np.abs(dveff_e + dveff_p + dveff_c)
+    dveff = dveff_e + dveff_p + dveff_c
 
     return dveff
 
 
-def get_i_p(amp_means, amp_covar, fixed_pars, n_samples):
+def get_i_p(amp_means, amp_covar, fixed_pars, d_p_fn, n_samples):
 
     amp_distrib = np.random.multivariate_normal(amp_means, amp_covar,
                                                 size=n_samples)
@@ -138,7 +138,7 @@ def get_i_p(amp_means, amp_covar, fixed_pars, n_samples):
     amp_ps = unc.Distribution(amp_distrib[:, 2] * u.km/u.s/u.pc**0.5)
     amp_pc = unc.Distribution(amp_distrib[:, 3] * u.km/u.s/u.pc**0.5)
 
-    d_p = get_d_p_distrib(n_samples)
+    d_p = d_p_fn(n_samples)
 
     k_p = fixed_pars['k_p']
     earth_pars = fixed_pars['earth_pars']
@@ -159,37 +159,41 @@ def get_i_p(amp_means, amp_covar, fixed_pars, n_samples):
     return sin_i_p.distribution
 
 
-def do_i_p(fixed_pars, sin_cos_ph, v_e_xyz, dveff_err, nmc, n_samples):
+def do_i_p(fixed_pars, sin_cos_ph, v_e_xyz, dveff_err, d_p_fn, nmc, n_samples):
 
-    omega_p_set, d_p_set, s_set, xi_set, v_lens_set = gen_free_pars_sets(nmc)
+    omega_p, d_p, s, xi, v_lens = gen_free_pars(d_p_fn, nmc)
 
     sin_i_p_fit = np.zeros((nmc, n_samples))
 
     for j in trange(nmc, delay=0.2):
 
         free_pars = {
-            'omega_p':  omega_p_set[j],
-            'd_p':      d_p_set[j],
-            's':        s_set[j],
-            'xi':       xi_set[j],
-            'v_lens':   v_lens_set[j],
+            'omega_p':  omega_p[j],
+            'd_p':      d_p[j],
+            's':        s[j],
+            'xi':       xi[j],
+            'v_lens':   v_lens[j],
         }
 
-        dveff = gen_dveff_abs(free_pars, fixed_pars, sin_cos_ph, v_e_xyz)
+        dveff = gen_dveff_signed(free_pars, fixed_pars, sin_cos_ph, v_e_xyz)
 
         dveff_obs = dveff + dveff_err * np.random.normal(size=len(dveff))
 
-        init_guess = np.array([1., 1., 1., 1., 1.])
+        init_guess = np.array([np.std(dveff_obs.value),
+                               np.std(dveff_obs.value),
+                               np.std(dveff_obs.value),
+                               np.std(dveff_obs.value),
+                               np.mean(dveff_obs.value)])
 
         popt, pcov = curve_fit(mdl_dveff_fit, sin_cos_ph, dveff_obs.value,
                                p0=init_guess)
 
-        sin_i_p_fit[j, :] = get_i_p(popt, pcov, fixed_pars, n_samples)
+        sin_i_p_fit[j, :] = get_i_p(popt, pcov, fixed_pars, d_p_fn, n_samples)
 
-    return omega_p_set, d_p_set, s_set, xi_set, v_lens_set, sin_i_p_fit
+    return omega_p, d_p, s, xi, v_lens, sin_i_p_fit
 
 
-def feasibility(psr_coord, p_orb_p, asini_p, t_asc_p, i_p_to_try,
+def feasibility(psr_coord, p_orb_p, asini_p, t_asc_p, sin_i_p_input, d_p_fn,
                 obs_loc, t_obs, dveff_err, nmc, n_samples):
 
     print('Started!')
@@ -234,29 +238,25 @@ def feasibility(psr_coord, p_orb_p, asini_p, t_asc_p, i_p_to_try,
 
     # loop through i_p values to test
 
-    ni_p = len(i_p_to_try)
-    omega_p_set = np.zeros((ni_p, nmc))
-    d_p_set = np.zeros((ni_p, nmc))
-    s_set = np.zeros((ni_p, nmc))
-    xi_set = np.zeros((ni_p, nmc))
-    v_lens_set = np.zeros((ni_p, nmc))
+    ni_p = len(sin_i_p_input)
+    omega_p = np.zeros((ni_p, nmc))
+    d_p = np.zeros((ni_p, nmc))
+    s = np.zeros((ni_p, nmc))
+    xi = np.zeros((ni_p, nmc))
+    v_lens = np.zeros((ni_p, nmc))
     sin_i_p_fit = np.zeros((ni_p, nmc, n_samples))
 
-    for idx, i_p in enumerate(i_p_to_try):
+    for idx, sin_i_p in enumerate(sin_i_p_input):
 
-        print(f'Simulating i_p = {i_p}')
+        print(f'Simulating sin(i_p) = {sin_i_p}')
 
-        fixed_pars['cos_i_p'] = np.cos(i_p)
+        fixed_pars['sin_i_p'] = sin_i_p
 
-        (omega_p_set[idx, :],
-         d_p_set[idx, :],
-         s_set[idx, :],
-         xi_set[idx, :],
-         v_lens_set[idx, :],
+        (omega_p[idx, :], d_p[idx, :], s[idx, :], xi[idx, :], v_lens[idx, :],
          sin_i_p_fit[idx, ...]) = do_i_p(fixed_pars, sin_cos_ph, v_e_xyz,
-                                         dveff_err, nmc, n_samples)
+                                         dveff_err, d_p_fn, nmc, n_samples)
 
-    return omega_p_set, d_p_set, s_set, xi_set, v_lens_set, sin_i_p_fit
+    return omega_p, d_p, s, xi, v_lens, sin_i_p_fit
 
 
 if __name__ == '__main__':
@@ -290,16 +290,14 @@ if __name__ == '__main__':
 
     i_p_to_try = [137.56] * u.deg
 
-    (omega_p_set,
-     d_p_set,
-     s_set,
-     xi_set,
-     v_lens_set,
-     sin_i_p_fit) = feasibility(psr_coord, p_orb_p, asini_p, t_asc_p,
-                                i_p_to_try, obs_loc, t_obs, dveff_err,
-                                nmc, n_samples)
+    sin_i_p_input = np.sin(i_p_to_try)
 
-    for idx, i_p in enumerate(i_p_to_try):
+    (omega_p, d_p, s, xi, v_lens,
+     sin_i_p_fit) = feasibility(psr_coord, p_orb_p, asini_p, t_asc_p,
+                                sin_i_p_input, get_d_p_distrib, obs_loc, t_obs,
+                                dveff_err, nmc, n_samples)
+
+    for idx, i_p in enumerate(sin_i_p_input):
 
         sin_i_p_avg = np.mean(sin_i_p_fit[idx, ...])
         sin_i_p_std = np.std(sin_i_p_fit[idx, ...])
