@@ -10,13 +10,20 @@ from astropy.coordinates import SkyCoord, EarthLocation
 from tqdm import trange
 
 from feasibility import feasibility
-from infer_pars import get_sin_i_p
+from infer_pars import get_sin_i_p_units
 from utils import get_earth_pars
 
 
 def d_p_prior(n_samples):
 
     d_p = unc.normal(156.79*u.pc, std=0.25*u.pc, n_samples=n_samples)
+
+    return d_p
+
+
+def d_p_prior_pc(n_samples):
+
+    d_p = np.random.normal(loc=156.79, scale=0.25, size=n_samples)
 
     return d_p
 
@@ -55,29 +62,27 @@ nmc = 1000
 
 # --- parameters that are known and fixed ---
 
-# pulsar radial velocity amplitude
-k_p = 2.*np.pi * asini_p / p_orb_p
-
 # earth parameters
 earth_pars = get_earth_pars(psr_coord)
 
-# gather parameters into dict
-fixed_pars = {
-    'psr_coord':    psr_coord,
-    'p_orb_p':      p_orb_p,
-    'asini_p':      asini_p,
-    't_asc_p':      t_asc_p,
-    'k_p':          k_p,
-    'earth_pars':   earth_pars,
-}
+# pulsar radial velocity amplitude
+k_p = 2.*np.pi * asini_p / p_orb_p
+k_p_kms = k_p.to_value(u.km/u.s)
+
+i_e = earth_pars['i_e']
+sin2_i_e = (np.sin(i_e)**2).value
+
+v_0_e = earth_pars['v_0_e']
+v_0_e_kms = v_0_e.to_value(u.km/u.s)
 
 n_samples = 1000
 
 sin_i_p_fit = np.zeros((nmc, n_samples))
 for j in trange(nmc):
 
-    sin_i_p_fit[j, :] = get_sin_i_p(amp_opt[j, :], amp_cov[j, :, :],
-                                    fixed_pars, d_p_prior, n_samples)
+    sin_i_p_fit[j, :] = get_sin_i_p_units(amp_opt[j, :], amp_cov[j, :, :],
+                                          sin2_i_e, v_0_e_kms, k_p_kms,
+                                          d_p_prior_pc, n_samples)
 
 percts = np.percentile(sin_i_p_fit, [16, 50, 84], axis=-1)
 q = np.diff(percts, axis=0)

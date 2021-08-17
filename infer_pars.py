@@ -32,3 +32,30 @@ def get_sin_i_p(amp_means, amp_covar, fixed_pars, d_p_fn, n_samples):
     sin_i_p = np.sqrt(sin2_i_p).to(u.dimensionless_unscaled)
 
     return sin_i_p.distribution
+
+
+def get_sin_i_p_units(amp_means_kmspc, amp_covar_kmspc,
+                      sin2_i_e, v_0_e_kms, k_p_kms, d_p_fn_pc, n_samples):
+
+    amp_distrib = np.random.multivariate_normal(amp_means_kmspc,
+                                                amp_covar_kmspc,
+                                                size=n_samples)
+    amp_es = amp_distrib[:, 0]
+    amp_ec = amp_distrib[:, 1]
+    amp_ps = amp_distrib[:, 2]
+    amp_pc = amp_distrib[:, 3]
+
+    d_p = d_p_fn_pc(n_samples)
+
+    amp2_e = amp_es**2 + amp_ec**2
+    amp2_p = amp_ps**2 + amp_pc**2
+    cos2_chi_e = amp_es**2 / amp2_e
+    cos2_chi_p = amp_ps**2 / amp2_p
+
+    b2_e = (1. - sin2_i_e) / (1. - sin2_i_e * cos2_chi_e)
+    z2 = b2_e / (amp2_e * amp2_p) * (v_0_e_kms * k_p_kms / d_p)**2
+    discrim = (1. + z2)**2 - 4. * cos2_chi_p * z2
+    sin2_i_p = 2. * z2 / (1. + z2 + np.sqrt(discrim))
+    sin_i_p = np.sqrt(sin2_i_p)
+
+    return sin_i_p
