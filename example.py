@@ -2,19 +2,11 @@ import numpy as np
 
 from astropy import units as u
 from astropy import constants as const
-from astropy import uncertainty as unc
 
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, EarthLocation
 
 from feasibility import TargetPulsar, ObservationCampaign, MCSimulation
-
-
-def d_p_prior(n_samples):
-
-    d_p = unc.normal(156.79*u.pc, std=0.25*u.pc, n_samples=n_samples)
-
-    return d_p
 
 
 def d_p_prior_pc(n_samples):
@@ -37,7 +29,7 @@ p_orb_p = 5.7410459 * u.day
 asini_p = 3.3667144 * const.c * u.s
 t_asc_p = Time(54501.4671, format='mjd', scale='tdb')
 
-target_pulsar = TargetPulsar(psr_coord, p_orb_p, asini_p, t_asc_p, d_p_prior)
+target_psr = TargetPulsar(psr_coord, p_orb_p, asini_p, t_asc_p, d_p_prior_pc)
 
 # --- observation parameters ---
 
@@ -54,11 +46,11 @@ obs_camp = ObservationCampaign(obs_loc, t_obs, dveff_err)
 
 # --- Monte Carlo data generation and fitting ---
 
-mcsim = MCSimulation(target_pulsar, obs_camp)
+mcsim = MCSimulation(target_psr, obs_camp)
 
 mcsim.run_mc_sim(nmc=1000)
 
-mcsim.infer_sin_i_p(d_p_prior_pc, n_samples=1000)
+mcsim.infer_sin_i_p(n_samples=1000)
 
 sin_i_p_percts = np.percentile(mcsim.sin_i_p_fit, [16, 50, 84], axis=-1)
 sin_i_p_q = np.diff(sin_i_p_percts, axis=0)
