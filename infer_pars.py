@@ -4,14 +4,13 @@ from astropy import units as u
 from astropy import uncertainty as unc
 
 
-def get_sin_i_p(amp_means, amp_covar, fixed_pars, d_p_fn, n_samples):
+def get_sin_i_p(amp_opt, amp_cov, fixed_pars, d_p_fn, n_samples):
 
-    amp_distrib = np.random.multivariate_normal(amp_means, amp_covar,
-                                                size=n_samples)
-    amp_es = unc.Distribution(amp_distrib[:, 0] * u.km/u.s/u.pc**0.5)
-    amp_ec = unc.Distribution(amp_distrib[:, 1] * u.km/u.s/u.pc**0.5)
-    amp_ps = unc.Distribution(amp_distrib[:, 2] * u.km/u.s/u.pc**0.5)
-    amp_pc = unc.Distribution(amp_distrib[:, 3] * u.km/u.s/u.pc**0.5)
+    amps = np.random.multivariate_normal(amp_opt, amp_cov, size=n_samples)
+    amp_es = unc.Distribution(amps[:, 0] * u.km/u.s/u.pc**0.5)
+    amp_ec = unc.Distribution(amps[:, 1] * u.km/u.s/u.pc**0.5)
+    amp_ps = unc.Distribution(amps[:, 2] * u.km/u.s/u.pc**0.5)
+    amp_pc = unc.Distribution(amps[:, 3] * u.km/u.s/u.pc**0.5)
 
     d_p = d_p_fn(n_samples)
 
@@ -34,16 +33,15 @@ def get_sin_i_p(amp_means, amp_covar, fixed_pars, d_p_fn, n_samples):
     return sin_i_p.distribution
 
 
-def get_sin_i_p_units(amp_means_kmspc, amp_covar_kmspc,
-                      sin2_i_e, v_0_e_kms, k_p_kms, d_p_fn_pc, n_samples):
+def get_sin_i_p_u(amp_opt_kmspc, amp_cov_kmspc,
+                  sin2_i_e, v_0_e_kms, k_p_kms, d_p_fn_pc, n_samples):
 
-    amp_distrib = np.random.multivariate_normal(amp_means_kmspc,
-                                                amp_covar_kmspc,
-                                                size=n_samples)
-    amp_es = amp_distrib[:, 0]
-    amp_ec = amp_distrib[:, 1]
-    amp_ps = amp_distrib[:, 2]
-    amp_pc = amp_distrib[:, 3]
+    amps = np.random.multivariate_normal(amp_opt_kmspc, amp_cov_kmspc,
+                                         size=n_samples)
+    amp_es = amps[:, 0]
+    amp_ec = amps[:, 1]
+    amp_ps = amps[:, 2]
+    amp_pc = amps[:, 3]
 
     d_p = d_p_fn_pc(n_samples)
 

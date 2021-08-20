@@ -9,37 +9,12 @@ from scipy.optimize import curve_fit
 
 from tqdm import trange
 
-from utils import get_earth_pars
+from utils import get_earth_pars, get_phase
+from infer_pars import get_sin_i_p_u
 
 
-def gen_free_pars(d_p_fn, nmc):
-
-    cos_i_p = unc.uniform(lower=0., upper=1., n_samples=nmc)
-    omega_p = unc.uniform(lower=0., upper=360.*u.deg, n_samples=nmc)
-    d_p = d_p_fn(nmc)
-    s = unc.uniform(lower=0., upper=1., n_samples=nmc)
-    xi = unc.uniform(lower=0.*u.deg, upper=360.*u.deg, n_samples=nmc)
-    v_lens = unc.normal(0.*u.km/u.s, std=20.*u.km/u.s, n_samples=nmc)
-
-    return (cos_i_p.distribution,
-            omega_p.distribution,
-            d_p.distribution,
-            s.distribution,
-            xi.distribution,
-            v_lens.distribution)
-
-
-def gen_dveff_sgn(free_pars, fixed_pars, sin_cos_ph, v_e_xyz):
-
-    psr_coord = fixed_pars['psr_coord']
-    k_p = fixed_pars['k_p']
-
-    cos_i_p = free_pars['cos_i_p']
-    omega_p = free_pars['omega_p']
-    d_p = free_pars['d_p']
-    xi = free_pars['xi']
-    s = free_pars['s']
-    v_lens = free_pars['v_lens']
+def gen_dveff_sgn(cos_i_p, omega_p, d_p, s, xi, v_lens,
+                  k_p, pm_ra_cosdec, pm_dec, sin_cos_ph, v_e_xyz):
 
     sin_ph_p = sin_cos_ph[2, :]
     cos_ph_p = sin_cos_ph[3, :]
@@ -50,7 +25,7 @@ def gen_dveff_sgn(free_pars, fixed_pars, sin_cos_ph, v_e_xyz):
     delta_omega_p = xi - omega_p
     d_eff = (1. - s) / s * d_p
 
-    mu_p_sys_par = psr_coord.pm_ra_cosdec * sin_xi + psr_coord.pm_dec * cos_xi
+    mu_p_sys_par = pm_ra_cosdec * sin_xi + pm_dec * cos_xi
     v_p_sys = (d_p * mu_p_sys_par).to(u.km/u.s,
                                       equivalencies=u.dimensionless_angles())
 
@@ -100,74 +75,146 @@ def fit_dveff(sin_cos_ph, dveff_obs):
     return popt, pcov
 
 
-def feasibility(psr_coord, p_orb_p, asini_p, t_asc_p, d_p_fn,
-                obs_loc, t_obs, dveff_err, nmc):
+class TargetPulsar(object):
 
-    print('Started!')
+    def __init__(self, coord, p_orb_p, asini_p, t_asc_p, d_p_prior_fn):
+        self.coord = coord
+        self.p_orb_p = p_orb_p
+        self.asini_p = asini_p
+        self.t_asc_p = t_asc_p
+        self.d_p_prior_fn = d_p_prior_fn
 
-    # --- parameters that are known and fixed ---
+        self.k_p = 2. * np.pi * self.asini_p / self.p_orb_p
 
-    # pulsar radial velocity amplitude
-    k_p = 2.*np.pi * asini_p / p_orb_p
+        earth_pars = get_earth_pars(self.coord)
+        self.p_orb_e = earth_pars['p_orb_e']
+        self.a_e = earth_pars['a_e']
+        self.v_0_e = earth_pars['v_0_e']
+        self.i_e = earth_pars['i_e']
+        self.omega_e = earth_pars['omega_e']
+        self.t_asc_e = earth_pars['t_asc_e']
 
-    # earth parameters
-    earth_pars = get_earth_pars(psr_coord)
 
-    # gather parameters into dict
-    fixed_pars = {
-        'psr_coord':    psr_coord,
-        'p_orb_p':      p_orb_p,
-        'asini_p':      asini_p,
-        't_asc_p':      t_asc_p,
-        'k_p':          k_p,
-        'earth_pars':   earth_pars,
-    }
+class ObservationCampaign(object):
 
-    # --- independent variables ---
+    def __init__(self, obs_loc, t_obs, dveff_err):
+        self.obs_loc = obs_loc
+        self.t_obs = t_obs
+        self.dveff_err = dveff_err
 
-    p_orb_e = earth_pars['p_orb_e']
-    t_asc_e = earth_pars['t_asc_e']
 
-    ph_e = ((t_obs - t_asc_e) / p_orb_e).to(u.dimensionless_unscaled) * u.cycle
-    ph_p = ((t_obs - t_asc_p) / p_orb_p).to(u.dimensionless_unscaled) * u.cycle
+class MCSimulation(object):
 
-    sin_cos_ph = np.array([
-        np.sin(ph_e).value,
-        np.cos(ph_e).value,
-        np.sin(ph_p).value,
-        np.cos(ph_p).value,
-    ])
+    def __init__(self, target, obs_camp):
+        self.target = target
+        self.obs_camp = obs_camp
 
-    psr_frame = SkyOffsetFrame(origin=psr_coord)
+        # --- independent variables ---
 
-    v_e_xyz = obs_loc.get_gcrs(t_obs).transform_to(psr_frame).velocity.d_xyz
+        self.ph_e = get_phase(self.obs_camp.t_obs,
+                              self.target.p_orb_e,
+                              self.target.t_asc_e)
+        self.ph_p = get_phase(self.obs_camp.t_obs,
+                              self.target.p_orb_p,
+                              self.target.t_asc_p)
+        self.sin_cos_ph = np.array([
+            np.sin(self.ph_e).value,
+            np.cos(self.ph_e).value,
+            np.sin(self.ph_p).value,
+            np.cos(self.ph_p).value,
+        ])
 
-    # generate distributions of free parameters
-    cos_i_p, omega_p, d_p, s, xi, v_lens = gen_free_pars(d_p_fn, nmc)
+        psr_frame = SkyOffsetFrame(origin=self.target.coord)
+        self.v_e_xyz = (self.obs_camp.obs_loc
+                                     .get_gcrs(self.obs_camp.t_obs)
+                                     .transform_to(psr_frame)
+                                     .velocity
+                                     .d_xyz)
 
-    # Monte Carlo data generation and fitting
-    nfc = 5
-    popt = np.zeros((nmc, nfc))
-    pcov = np.zeros((nmc, nfc, nfc))
+    def run_mc_sim(self, nmc=1000, cos_i_p=None, omega_p=None, d_p=None,
+                   s=None, xi=None, v_lens=None):
+        self.nmc = nmc
 
-    for j in trange(nmc):
+        # --- generate free parameter distributions from priors ---
 
-        free_pars = {
-            'cos_i_p':  cos_i_p[j],
-            'omega_p':  omega_p[j],
-            'd_p':      d_p[j],
-            's':        s[j],
-            'xi':       xi[j],
-            'v_lens':   v_lens[j],
-        }
+        if cos_i_p is None:
+            self.cos_i_p = unc.uniform(lower=0., upper=1.,
+                                       n_samples=self.nmc).distribution
+        else:
+            self.cos_i_p = cos_i_p
 
-        # generate data
-        dveff = gen_dveff_sgn(free_pars, fixed_pars, sin_cos_ph, v_e_xyz)
+        if omega_p is None:
+            self.omega_p = unc.uniform(lower=0.*u.deg, upper=360.*u.deg,
+                                       n_samples=self.nmc).distribution
+        else:
+            self.omega_p = omega_p
 
-        # add noise
-        dveff_obs = dveff + dveff_err * np.random.normal(size=len(dveff))
+        if d_p is None:
+            self.d_p = self.target.d_p_prior_fn(self.nmc).distribution
+        else:
+            self.d_p = d_p
 
-        # fit model to data
-        popt[j, :], pcov[j, :, :] = fit_dveff(sin_cos_ph, dveff_obs)
+        if s is None:
+            self.s = unc.uniform(lower=0., upper=1.,
+                                 n_samples=self.nmc).distribution
+        else:
+            self.s = s
 
-    return cos_i_p, omega_p, d_p, s, xi, v_lens, popt, pcov
+        if xi is None:
+            self.xi = unc.uniform(lower=0.*u.deg, upper=360.*u.deg,
+                                  n_samples=self.nmc).distribution
+        else:
+            self.xi = xi
+
+        if v_lens is None:
+            self.v_lens = unc.normal(0.*u.km/u.s, std=20.*u.km/u.s,
+                                     n_samples=self.nmc).distribution
+        else:
+            self.v_lens = v_lens
+
+        # --- Monte Carlo data generation and fitting ---
+
+        nfc = 5
+        self.amp_opt_kmspc = np.zeros((self.nmc, nfc))
+        self.amp_cov_kmspc = np.zeros((self.nmc, nfc, nfc))
+
+        for j in trange(self.nmc):
+
+            # generate data
+            dveff = gen_dveff_sgn(self.cos_i_p[j],
+                                  self.omega_p[j],
+                                  self.d_p[j],
+                                  self.s[j],
+                                  self.xi[j],
+                                  self.v_lens[j],
+                                  self.target.k_p,
+                                  self.target.coord.pm_ra_cosdec,
+                                  self.target.coord.pm_dec,
+                                  self.sin_cos_ph,
+                                  self.v_e_xyz)
+
+            # add noise
+            dveff_obs = dveff + (self.obs_camp.dveff_err
+                                 * np.random.normal(size=len(dveff)))
+
+            # fit model to data, store optimum solution and covariance matrix
+            (self.amp_opt_kmspc[j, :],
+             self.amp_cov_kmspc[j, :, :]) = fit_dveff(self.sin_cos_ph,
+                                                      dveff_obs)
+
+    def infer_sin_i_p(self, d_p_prior_pc, n_samples):
+
+        # convert Quantities to floats in expected units
+        k_p_kms = self.target.k_p.to_value(u.km/u.s)
+        sin2_i_e = (np.sin(self.target.i_e)**2).value
+        v_0_e_kms = self.target.v_0_e.to_value(u.km/u.s)
+
+        # find posterior distribution of sin_i_p for each sample
+        self.sin_i_p_fit = np.zeros((self.nmc, n_samples))
+        for j in trange(self.nmc):
+
+            self.sin_i_p_fit[j, :] = get_sin_i_p_u(self.amp_opt_kmspc[j, :],
+                                                   self.amp_cov_kmspc[j, :, :],
+                                                   sin2_i_e, v_0_e_kms,
+                                                   k_p_kms, d_p_prior_pc,
+                                                   n_samples)

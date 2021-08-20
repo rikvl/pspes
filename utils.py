@@ -34,3 +34,10 @@ def get_earth_pars(coord_equat):
     }
 
     return earth_pars
+
+
+def get_phase(t, p, t_0):
+
+    ph = ((t - t_0) / p).to(u.dimensionless_unscaled) * u.cycle
+
+    return ph
