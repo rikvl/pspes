@@ -8,7 +8,7 @@ from scipy.optimize import curve_fit
 
 from tqdm import trange
 
-from utils import get_earth_pars, get_phase, d_p_prior_fb
+from utils import get_earth_pars, get_phase, d_prior_edsd
 from infer_pars import get_sin_i_p_u
 
 
@@ -223,7 +223,8 @@ class MCSimulation(object):
             the pulsar distance according to its prior probability
             distribution. Its only argument should be the output shape (int or
             tuple of ints), setting the number of samples in the array.
-            Defaults to the fallback distance prior function `d_p_prior_fb`.
+            Defaults to the fallback distance prior function `d_prior_edsd`
+            with a length scale of 1 kpc.
         s_fn : callable, optional
             Function that returns a `~astropy.units.Quantity` array sampling
             the fractional screen-pulsar distance according to its prior
@@ -269,7 +270,7 @@ class MCSimulation(object):
         if d_p_fn is not None:
             self.d_p_fn = d_p_fn
         else:
-            self.d_p_fn = lambda size: d_p_prior_fb(coord=self.target.coord,
+            self.d_p_fn = lambda size: d_prior_edsd(length_scale=1.*u.kpc,
                                                     size=size)
 
         if s_fn is not None:

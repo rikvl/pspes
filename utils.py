@@ -5,6 +5,8 @@ from astropy import units as u
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
 
+from scipy.special import gammainccinv
+
 
 def get_earth_pars(coord_equat):
     """Return parameters describing Earth's orbit w.r.t. a position on the sky.
@@ -63,24 +65,39 @@ def get_phase(t, p, t_0):
     return ph
 
 
-def d_p_prior_fb(coord_equat, size):
-    """Fallback pulsar distance prior probability function.
+def d_prior_edsd(length_scale, size):
+    r"""Exponentially decreasing space density distance prior function.
 
-    Placeholder for now, to be replaced.
+    From Bailer-Jones (2015, 2018)
+    https://ui.adsabs.harvard.edu/abs/2015PASP..127..994B/abstract
+    https://ui.adsabs.harvard.edu/abs/2018AJ....156...58B/abstract
+
+    This prior is given by
+
+    .. math::
+
+        P(r/L) = (r/L)^2 \exp( -r/L ) / 2, \qquad r/L > 0,
+
+    where :math:`r` is distance and :math:`L` is a length scale. The prior has
+    a single mode at :math:`2 L`.
+
+    In principle, :math:`L` should vary as a function of Galactic coordinates.
+    Using a fixed :math:`L` corresponds to a simplistic, isotropic prior.
 
     Parameters
     ----------
-    coord_equat : `~astropy.coordinates.SkyCoord`
-        Celestial coordinates of pulsar system.
+    length_scale : `~astropy.units.Quantity`
+        The length scale :math:`L`.
     size : int or tuple of ints
         Output shape, setting the number of samples in the array.
 
     Returns
     -------
-    d_p : `~astropy.units.Quantity`
-        Array of pulsar distances sampling the prior probability distribution.
+    distance : `~astropy.units.Quantity`
+        Array of distances sampling the prior probability distribution.
     """
 
-    d_p = np.random.uniform(low=0.5*u.kpc, high=2.5*u.kpc, size=size)
+    uniform_var = np.random.uniform(size=size)
+    distance = gammainccinv(3, uniform_var) * length_scale
 
-    return d_p
+    return distance
