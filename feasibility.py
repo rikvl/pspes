@@ -1,7 +1,6 @@
 import numpy as np
 
 from astropy import units as u
-from astropy import uncertainty as unc
 
 from astropy.coordinates import SkyOffsetFrame
 
@@ -9,7 +8,7 @@ from scipy.optimize import curve_fit
 
 from tqdm import trange
 
-from utils import get_earth_pars, get_phase
+from utils import get_earth_pars, get_phase, d_p_prior_fb
 from infer_pars import get_sin_i_p_u
 
 
@@ -108,28 +107,11 @@ def mdl_dveff_har(sin_cos_ph, *fit_pars):
     return dveff
 
 
-def fit_dveff(sin_cos_ph, dveff_obs):
-    """Fit `mdl_dveff_har` to `dveff_obs` using `scipy.optimize.curve_fit`.
-    """
-
-    # make initial guess for fitting
-    p0 = np.array([np.std(dveff_obs.value),
-                  np.std(dveff_obs.value),
-                  np.std(dveff_obs.value),
-                  np.std(dveff_obs.value),
-                  np.mean(dveff_obs.value)])
-
-    # fit model of harmonic coefficients to data
-    popt, pcov = curve_fit(mdl_dveff_har, sin_cos_ph, dveff_obs.value, p0=p0)
-
-    return popt, pcov
-
-
 class TargetPulsar(object):
     """Pulsar system that is targetted by scintillometry.
     """
 
-    def __init__(self, coord, p_orb_p, asini_p, t_asc_p, d_p_pc_prior_fn):
+    def __init__(self, coord, p_orb_p, asini_p, t_asc_p):
         """Initializes `TargetPulsar`.
 
         Parameters
@@ -142,16 +124,11 @@ class TargetPulsar(object):
             Pulsar's projected semi-major axis.
         t_asc_p : `~astropy.time.Time`
             Pulsar's time of ascending node.
-        d_p_pc_prior_fn : callable
-            Function that returns a `~numpy.ndarray` of pulsar distances in pc
-            following the prior probability distribution. Its only argument
-            should be the number (`int`) of samples in the array.
         """
         self.coord = coord
         self.p_orb_p = p_orb_p
         self.asini_p = asini_p
         self.t_asc_p = t_asc_p
-        self.d_p_pc_prior_fn = d_p_pc_prior_fn
 
         self.k_p = 2. * np.pi * self.asini_p / self.p_orb_p
 
@@ -165,8 +142,7 @@ class TargetPulsar(object):
                 f"coord:\n{self.coord.__repr__()}\n"
                 f"p_orb_p:\n{self.p_orb_p.__repr__()}\n"
                 f"asini_p:\n{self.asini_p.__repr__()}\n"
-                f"t_asc_p:\n{self.t_asc_p.__repr__()}\n"
-                f"d_p_pc_prior_fn:\n{self.d_p_pc_prior_fn.__repr__()}\n")
+                f"t_asc_p:\n{self.t_asc_p.__repr__()}\n")
 
 
 class ObservationCampaign(object):
@@ -220,7 +196,8 @@ class MCSimulation(object):
     a_e = 1. * u.au
     v_0_e = 2. * np.pi * a_e / p_orb_e
 
-    def __init__(self, target, obs_camp):
+    def __init__(self, target, obs_camp, cos_i_p_fn=None, omega_p_fn=None,
+                 d_p_fn=None, s_fn=None, xi_fn=None, v_lens_fn=None):
         """Initializes `MCSimulation`.
 
         Parameters
@@ -229,11 +206,97 @@ class MCSimulation(object):
             Pulsar system that is the target of the observation campaign.
         obs_camp : `ObservationCampaign`
             Scintillometric observation campaign to be simulated.
+        cos_i_p_fn : callable, optional
+            Function that returns a `~astropy.units.Quantity` array sampling
+            the cosine of the pulsar system's orbital inclination according to
+            its prior probability distribution. Its only argument should be the
+            output shape (int or tuple of ints), setting the number of samples
+            in the array. Defaults to a flat prior between -1 and 1.
+        omega_p_fn : callable, optional
+            Function that returns a `~astropy.units.Quantity` array sampling
+            the pulsar's longitude of ascending node according to its prior
+            probability distribution. Its only argument should be the output
+            shape (int or tuple of ints), setting the number of samples in
+            the array. Defaults to a flat prior between 0 deg and 360 deg.
+        d_p_fn : callable, optional
+            Function that returns a `~astropy.units.Quantity` array sampling
+            the pulsar distance according to its prior probability
+            distribution. Its only argument should be the output shape (int or
+            tuple of ints), setting the number of samples in the array.
+            Defaults to the fallback distance prior function `d_p_prior_fb`.
+        s_fn : callable, optional
+            Function that returns a `~astropy.units.Quantity` array sampling
+            the fractional screen-pulsar distance according to its prior
+            probability distribution. Its only argument should be the output
+            shape (int or tuple of ints), setting the number of samples in the
+            array. Defaults to a flat prior between 0 and 1.
+        xi_fn : callable, optional
+            Function that returns a `~astropy.units.Quantity` array sampling
+            the position angle of the screen's line of lensed images according
+            to its prior probability distribution. Its only argument should be
+            the output shape (int or tuple of ints), setting the number of
+            samples in the array. Defaults to a flat prior between 0 deg and
+            360 deg.
+        v_lens_fn : callable, optional
+            Function that returns a `~astropy.units.Quantity` array sampling
+            the lens velocity component parallel to angle `xi` according to its
+            prior probability distribution. Its only argument should be the
+            output shape (int or tuple of ints), setting the number of samples
+            in the array. Defaults to a Gaussian prior with a mean of 0 km/s
+            and a standard deviation of 20 km/s.
         """
         self.target = target
         self.obs_camp = obs_camp
 
-        # --- independent variables ---
+        # --- load prior functions ---
+
+        if cos_i_p_fn is not None:
+            self.cos_i_p_fn = cos_i_p_fn
+        else:
+            self.cos_i_p_fn = lambda size: (np.random.uniform(low=-1.,
+                                                              high=1.,
+                                                              size=size)
+                                            << u.dimensionless_unscaled)
+
+        if omega_p_fn is not None:
+            self.omega_p_fn = omega_p_fn
+        else:
+            self.omega_p_fn = lambda size: (np.random.uniform(low=0.,
+                                                              high=360.,
+                                                              size=size)
+                                            << u.deg)
+
+        if d_p_fn is not None:
+            self.d_p_fn = d_p_fn
+        else:
+            self.d_p_fn = lambda size: d_p_prior_fb(coord=self.target.coord,
+                                                    size=size)
+
+        if s_fn is not None:
+            self.s_fn = s_fn
+        else:
+            self.s_fn = lambda size: (np.random.uniform(low=0.,
+                                                        high=1.,
+                                                        size=size)
+                                      << u.dimensionless_unscaled)
+
+        if xi_fn is not None:
+            self.xi_fn = xi_fn
+        else:
+            self.xi_fn = lambda size: (np.random.uniform(low=0.,
+                                                         high=360.,
+                                                         size=size)
+                                       << u.deg)
+
+        if v_lens_fn is not None:
+            self.v_lens_fn = v_lens_fn
+        else:
+            self.v_lens_fn = lambda size: (np.random.normal(loc=0.,
+                                                            scale=20.,
+                                                            size=size)
+                                           << u.km/u.s)
+
+        # --- prepare independent variables ---
 
         self.ph_e = get_phase(self.obs_camp.t_obs,
                               MCSimulation.p_orb_e,
@@ -258,73 +321,32 @@ class MCSimulation(object):
     def __repr__(self) -> str:
         return (f"MCSimulation\n\n"
                 f"target:\n{self.target.__repr__()}\n"
-                f"obs_camp:\n{self.obs_camp.__repr__()}\n")
+                f"obs_camp:\n{self.obs_camp.__repr__()}\n"
+                f"cos_i_p_fn:\n{self.cos_i_p_fn.__repr__()}\n"
+                f"omega_p_fn:\n{self.omega_p_fn.__repr__()}\n"
+                f"d_p_fn:\n{self.d_p_fn.__repr__()}\n"
+                f"s_fn:\n{self.s_fn.__repr__()}\n"
+                f"xi_fn:\n{self.xi_fn.__repr__()}\n"
+                f"v_lens_fn:\n{self.v_lens_fn.__repr__()}\n")
 
-    def run_mc_sim(self, nmc=1000, cos_i_p=None, omega_p=None, d_p=None,
-                   s=None, xi=None, v_lens=None):
+    def run_mc_sim(self, nmc):
         """Run the Monte Carlo simulation.
 
         Parameters
         ----------
-        nmc : int, default 1000
-            Number of hypothetical systems to simulate.
-        cos_i_p : `~astropy.units.Quantity`, optional
-            Input samples's cosine of the pulsar system's orbital inclination.
-            Defaults to a flat prior between -1 and 1.
-        omega_p : `~astropy.units.Quantity`, optional
-            Input samples's pulsar's longitude of ascending node. Defaults to a
-            flat prior between 0 and 360 deg.
-        d_p : `~astropy.units.Quantity`, optional
-            Input samples's pulsar distance. Defaults to the distance prior
-            provided by the `target` attribute.
-        s : `~astropy.units.Quantity`, optional
-            Input samples's fractional screen-pulsar distance. Defaults to a
-            flat prior between 0 and 1.
-        xi : `~astropy.units.Quantity`, optional
-            Input samples's position angle of screen's line of lensed images.
-            Defaults to a flat prior between 0 and 360 deg.
-        v_lens : `~astropy.units.Quantity`, optional
-            Input samples's lens velocity parallel to `xi`. Defaults to a
-            Gaussian prior with mean 0 and std 20 km/s.
+        nmc : int
+            Number of scintillometric system instances to simulate.
         """
         self.nmc = nmc
 
         # --- generate free parameter distributions from priors ---
 
-        if cos_i_p is None:
-            self.cos_i_p = unc.uniform(lower=-1., upper=1.,
-                                       n_samples=self.nmc).distribution
-        else:
-            self.cos_i_p = cos_i_p
-
-        if omega_p is None:
-            self.omega_p = unc.uniform(lower=0.*u.deg, upper=360.*u.deg,
-                                       n_samples=self.nmc).distribution
-        else:
-            self.omega_p = omega_p
-
-        if d_p is None:
-            self.d_p = self.target.d_p_pc_prior_fn(self.nmc) * u.pc
-        else:
-            self.d_p = d_p
-
-        if s is None:
-            self.s = unc.uniform(lower=0., upper=1.,
-                                 n_samples=self.nmc).distribution
-        else:
-            self.s = s
-
-        if xi is None:
-            self.xi = unc.uniform(lower=0.*u.deg, upper=360.*u.deg,
-                                  n_samples=self.nmc).distribution
-        else:
-            self.xi = xi
-
-        if v_lens is None:
-            self.v_lens = unc.normal(0.*u.km/u.s, std=20.*u.km/u.s,
-                                     n_samples=self.nmc).distribution
-        else:
-            self.v_lens = v_lens
+        self.cos_i_p = self.cos_i_p_fn(self.nmc)
+        self.omega_p = self.omega_p_fn(self.nmc)
+        self.d_p = self.d_p_fn(self.nmc)
+        self.s = self.s_fn(self.nmc)
+        self.xi = self.xi_fn(self.nmc)
+        self.v_lens = self.v_lens_fn(self.nmc)
 
         # --- Monte Carlo data generation and fitting ---
 
@@ -351,10 +373,19 @@ class MCSimulation(object):
             dveff_obs = dveff + (self.obs_camp.dveff_err
                                  * np.random.normal(size=len(dveff)))
 
+            # make initial guess for fitting
+            init_guess = np.array([np.std(dveff_obs.value),
+                                   np.std(dveff_obs.value),
+                                   np.std(dveff_obs.value),
+                                   np.std(dveff_obs.value),
+                                   np.mean(dveff_obs.value)])
+
             # fit model to data, store optimum solution and covariance matrix
             (self.amp_opt_kmspc[j, :],
-             self.amp_cov_kmspc[j, :, :]) = fit_dveff(self.sin_cos_ph,
-                                                      dveff_obs)
+             self.amp_cov_kmspc[j, :, :]) = curve_fit(mdl_dveff_har,
+                                                      self.sin_cos_ph,
+                                                      dveff_obs.value,
+                                                      p0=init_guess)
 
     def infer_sin_i_p(self, n_samples=1000):
         """Infer sine of pulsar orbital inclination for all MC samples.
@@ -366,9 +397,10 @@ class MCSimulation(object):
         """
 
         # convert Quantities to floats in expected units
-        k_p_kms = self.target.k_p.to_value(u.km/u.s)
+        d_p_pc = self.d_p_fn((self.nmc, n_samples)).to_value(u.pc)
         sin2_i_e = (np.sin(self.target.i_e)**2).value
         v_0_e_kms = MCSimulation.v_0_e.to_value(u.km/u.s)
+        k_p_kms = self.target.k_p.to_value(u.km/u.s)
 
         # find posterior distribution of sin_i_p for each sample
         self.sin_i_p_fit = np.zeros((self.nmc, n_samples))
@@ -376,8 +408,8 @@ class MCSimulation(object):
 
             self.sin_i_p_fit[j, :] = get_sin_i_p_u(self.amp_opt_kmspc[j, :],
                                                    self.amp_cov_kmspc[j, :, :],
+                                                   d_p_pc[j, :],
                                                    sin2_i_e,
                                                    v_0_e_kms,
                                                    k_p_kms,
-                                                   self.target.d_p_pc_prior_fn,
                                                    n_samples)

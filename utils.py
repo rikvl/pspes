@@ -1,3 +1,5 @@
+import numpy as np
+
 from astropy import units as u
 
 from astropy.time import Time
@@ -59,3 +61,26 @@ def get_phase(t, p, t_0):
     ph = ((t - t_0) / p).to(u.dimensionless_unscaled) * u.cycle
 
     return ph
+
+
+def d_p_prior_fb(coord_equat, size):
+    """Fallback pulsar distance prior probability function.
+
+    Placeholder for now, to be replaced.
+
+    Parameters
+    ----------
+    coord_equat : `~astropy.coordinates.SkyCoord`
+        Celestial coordinates of pulsar system.
+    size : int or tuple of ints
+        Output shape, setting the number of samples in the array.
+
+    Returns
+    -------
+    d_p : `~astropy.units.Quantity`
+        Array of pulsar distances sampling the prior probability distribution.
+    """
+
+    d_p = np.random.uniform(low=0.5*u.kpc, high=2.5*u.kpc, size=size)
+
+    return d_p
