@@ -9,7 +9,6 @@ from scipy.optimize import curve_fit
 from tqdm import trange
 
 from utils import get_earth_pars, get_phase, d_prior_edsd
-from infer_pars import get_sin_i_p_u
 
 
 def gen_dveff_sgn(cos_i_p, omega_p, d_p, s, xi, v_lens,
@@ -92,15 +91,15 @@ def mdl_dveff_har(sin_cos_ph, *fit_pars):
         Time series of signed scaled effective velocities.
     """
 
-    amp_es, amp_ec, amp_ps, amp_pc, dveff_c = fit_pars
+    hc_es, hc_ec, hc_ps, hc_pc, dveff_c = fit_pars
 
     sin_ph_e = sin_cos_ph[0, :]
     cos_ph_e = sin_cos_ph[1, :]
     sin_ph_p = sin_cos_ph[2, :]
     cos_ph_p = sin_cos_ph[3, :]
 
-    dveff_e = amp_es * sin_ph_e - amp_ec * cos_ph_e
-    dveff_p = amp_ps * sin_ph_p - amp_pc * cos_ph_p
+    dveff_e = hc_es * sin_ph_e - hc_ec * cos_ph_e
+    dveff_p = hc_ps * sin_ph_p - hc_pc * cos_ph_p
 
     dveff = dveff_e + dveff_p + dveff_c
 
@@ -191,6 +190,8 @@ class MCSimulation(object):
     informs how accurately this parameter can be measured for the specified
     pulsar system and observation campaign.
     """
+    
+    nhc = 5
 
     p_orb_e = 1. * u.yr
     a_e = 1. * u.au
@@ -351,9 +352,8 @@ class MCSimulation(object):
 
         # --- Monte Carlo data generation and fitting ---
 
-        nfc = 5
-        self.amp_opt_kmspc = np.zeros((self.nmc, nfc))
-        self.amp_cov_kmspc = np.zeros((self.nmc, nfc, nfc))
+        self.hcs_opt = np.zeros((self.nmc, MCSimulation.nhc))
+        self.hcs_cov = np.zeros((self.nmc, MCSimulation.nhc, MCSimulation.nhc))
 
         for j in trange(self.nmc):
 
@@ -374,22 +374,28 @@ class MCSimulation(object):
             dveff_obs = dveff + (self.obs_camp.dveff_err
                                  * np.random.normal(size=len(dveff)))
 
+            # convert data to `numpy.ndarray` in right units
+            dveff_obs_kmspc = dveff_obs.to_value(u.km/u.s/u.pc**0.5)
+
             # make initial guess for fitting
-            init_guess = np.array([np.std(dveff_obs.value),
-                                   np.std(dveff_obs.value),
-                                   np.std(dveff_obs.value),
-                                   np.std(dveff_obs.value),
-                                   np.mean(dveff_obs.value)])
+            init_guess = np.array([np.std(dveff_obs_kmspc),
+                                   np.std(dveff_obs_kmspc),
+                                   np.std(dveff_obs_kmspc),
+                                   np.std(dveff_obs_kmspc),
+                                   np.mean(dveff_obs_kmspc)])
 
             # fit model to data, store optimum solution and covariance matrix
-            (self.amp_opt_kmspc[j, :],
-             self.amp_cov_kmspc[j, :, :]) = curve_fit(mdl_dveff_har,
-                                                      self.sin_cos_ph,
-                                                      dveff_obs.value,
-                                                      p0=init_guess)
+            (self.hcs_opt[j, :],
+             self.hcs_cov[j, :, :]) = curve_fit(mdl_dveff_har,
+                                                self.sin_cos_ph,
+                                                dveff_obs_kmspc,
+                                                p0=init_guess)
 
     def infer_sin_i_p(self, n_samples=1000):
         """Infer sine of pulsar orbital inclination for all MC samples.
+
+        Optimized by not using `~astropy.units.Quantity`, but `numpy.ndarray`
+        of values in the right units.
 
         Parameters
         ----------
@@ -403,14 +409,31 @@ class MCSimulation(object):
         v_0_e_kms = MCSimulation.v_0_e.to_value(u.km/u.s)
         k_p_kms = self.target.k_p.to_value(u.km/u.s)
 
-        # find posterior distribution of sin_i_p for each sample
-        self.sin_i_p_fit = np.zeros((self.nmc, n_samples))
+        # for each MC instance, generate array of harmonic coefficient values
+        # sampling the posterior probability distribution
+        hcs = np.zeros((self.nmc, n_samples, MCSimulation.nhc))
         for j in trange(self.nmc):
 
-            self.sin_i_p_fit[j, :] = get_sin_i_p_u(self.amp_opt_kmspc[j, :],
-                                                   self.amp_cov_kmspc[j, :, :],
-                                                   d_p_pc[j, :],
-                                                   sin2_i_e,
-                                                   v_0_e_kms,
-                                                   k_p_kms,
-                                                   n_samples)
+            hcs[j, :, :] = np.random.multivariate_normal(self.hcs_opt[j, :],
+                                                         self.hcs_cov[j, :, :],
+                                                         size=n_samples)
+
+        # separate harmonic coefficients
+        hc_es = hcs[:, :, 0]
+        hc_ec = hcs[:, :, 1]
+        hc_ps = hcs[:, :, 2]
+        hc_pc = hcs[:, :, 3]
+
+        # compute amplitudes and phase offsets of sinusoids
+        amp2_e = hc_es**2 + hc_ec**2
+        amp2_p = hc_ps**2 + hc_pc**2
+        cos2_chi_e = hc_es**2 / amp2_e
+        cos2_chi_p = hc_ps**2 / amp2_p
+
+        # compute sin_i_p posterior distributions of all MC instances
+        b2_e = (1. - sin2_i_e) / (1. - sin2_i_e * cos2_chi_e)
+        z2 = b2_e / (amp2_e * amp2_p) * (v_0_e_kms * k_p_kms / d_p_pc)**2
+        discrim = (1. + z2)**2 - 4. * cos2_chi_p * z2
+        sin2_i_p = 2. * z2 / (1. + z2 + np.sqrt(discrim))
+
+        self.sin_i_p_fit = np.sqrt(sin2_i_p)
