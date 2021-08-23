@@ -1,6 +1,14 @@
+# Compiled files
 __pycache__
+
+# Jupyter Notebook
 .ipynb_checkpoints
 
-*.prof
+# pyenv
+.python-version
 
-zooi
+# Mac OSX
+.DS_Store
+
+# VSCode
+.vscode

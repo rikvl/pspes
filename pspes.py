@@ -6,7 +6,10 @@ from astropy.coordinates import SkyOffsetFrame
 
 from scipy.optimize import curve_fit
 
-from tqdm import trange
+try:
+    from tqdm import trange
+except ImportError:
+    trange = range
 
 from utils import get_earth_pars, get_phase, d_prior_edsd
 
@@ -190,7 +193,7 @@ class MCSimulation(object):
     informs how accurately this parameter can be measured for the specified
     pulsar system and observation campaign.
     """
-    
+
     nhc = 5
 
     p_orb_e = 1. * u.yr

@@ -6,7 +6,7 @@ from astropy import constants as const
 from astropy.time import Time
 from astropy.coordinates import SkyCoord, EarthLocation
 
-from feasibility import TargetPulsar, ObservationCampaign, MCSimulation
+from pspes import TargetPulsar, ObservationCampaign, MCSimulation
 
 
 def d_p_prior(n_samples):
@@ -15,6 +15,8 @@ def d_p_prior(n_samples):
 
     return d_p
 
+
+print('Example script started.')
 
 # set random number generator seed
 np.random.seed(654321)
@@ -48,28 +50,31 @@ obs_camp = ObservationCampaign(obs_loc, t_obs, dveff_err)
 
 mcsim = MCSimulation(target_psr, obs_camp, d_p_fn=d_p_prior)
 
+print('Generating and fitting synthetic data:')
+
 mcsim.run_mc_sim(nmc=1000)
+
+print('Inferring sin(i_p) from harmonic coefficients:')
 
 mcsim.infer_sin_i_p(n_samples=1000)
 
-sin_i_p_percts = np.percentile(mcsim.sin_i_p_fit, [16, 50, 84], axis=-1)
-sin_i_p_q = np.diff(sin_i_p_percts, axis=0)
-sin_i_p_comb_q = sin_i_p_q.mean(axis=0)
-sin_i_p_comb_q_perct = np.percentile(sin_i_p_comb_q, [16, 50, 84], axis=-1)
-sin_i_p_comb_q_q = np.diff(sin_i_p_comb_q_perct)
+sin_i_p_perct = np.percentile(mcsim.sin_i_p_fit, [16, 50, 84], axis=1)
+sin_i_p_etihw = np.diff(sin_i_p_perct[::2, :], axis=0) / 2
+sin_i_p_etihw_perct = np.percentile(sin_i_p_etihw, [16, 50, 84])
+sin_i_p_etihw_uncer = np.diff(sin_i_p_etihw_perct)
 
-print('delta sin(i_p) = '
-      f'{sin_i_p_comb_q_perct[1]:.4f} ['
-      f'+{sin_i_p_comb_q_q[1]:.4f}, '
-      f'-{sin_i_p_comb_q_q[0]:.4f}]')
+print('delta sin(i_p) ='
+      f' {sin_i_p_etihw_perct[1]:.4f} ['
+      f'+{sin_i_p_etihw_uncer[1]:.4f}, '
+      f'-{sin_i_p_etihw_uncer[0]:.4f}]')
 
 i_p_fit = (np.arcsin(mcsim.sin_i_p_fit) * u.rad).to(u.deg)
-i_p_percts = np.percentile(i_p_fit, [16, 50, 84], axis=-1)
-i_p_q = np.diff(i_p_percts, axis=0)
-i_p_comb_q = i_p_q.mean(axis=0)
-i_p_comb_q_perct = np.percentile(i_p_comb_q, [16, 50, 84], axis=-1)
-i_p_comb_q_q = np.diff(i_p_comb_q_perct)
+i_p_perct = np.percentile(i_p_fit, [16, 50, 84], axis=1)
+i_p_etihw = np.diff(i_p_perct[::2, :], axis=0) / 2
+i_p_etihw_perct = np.percentile(i_p_etihw, [16, 50, 84])
+i_p_etihw_uncer = np.diff(i_p_etihw_perct)
 
-print(f'delta i_p = {i_p_comb_q_perct[1].to_value(u.deg):.2f} ['
-      f'+{i_p_comb_q_q[1].to_value(u.deg):.2f}, '
-      f'-{i_p_comb_q_q[0].to_value(u.deg):.2f}] deg')
+print('delta i_p ='
+      f' {i_p_etihw_perct[1].to_value(u.deg):.2f} ['
+      f'+{i_p_etihw_uncer[1].to_value(u.deg):.2f}, '
+      f'-{i_p_etihw_uncer[0].to_value(u.deg):.2f}]')
