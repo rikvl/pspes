@@ -394,23 +394,18 @@ class MCSimulation(object):
                                                 dveff_obs_kmspc,
                                                 p0=init_guess)
 
-    def infer_sin_i_p(self, n_samples=1000):
-        """Infer sine of pulsar orbital inclination for all MC samples.
+    def get_squared_phenpars(self, n_samples):
+        """Generate phenomenological parameters for all MC samples.
 
         Optimized by not using `~astropy.units.Quantity`, but `numpy.ndarray`
-        of values in the right units.
+        of values in the right units. Generated amplitudes are in units of
+        km/s/sqrt(pc); phase offsets are in rad.
 
         Parameters
         ----------
-        n_samples : int, default 1000
+        n_samples : int
             Number of samples to use in Monte Carlo error propagation.
         """
-
-        # convert Quantities to floats in expected units
-        d_p_pc = self.d_p_fn((self.nmc, n_samples)).to_value(u.pc)
-        sin2_i_e = (np.sin(self.target.i_e)**2).value
-        v_0_e_kms = MCSimulation.v_0_e.to_value(u.km/u.s)
-        k_p_kms = self.target.k_p.to_value(u.km/u.s)
 
         # for each MC instance, generate array of harmonic coefficient values
         # sampling the posterior probability distribution
@@ -428,15 +423,65 @@ class MCSimulation(object):
         hc_pc = hcs[:, :, 3]
 
         # compute amplitudes and phase offsets of sinusoids
-        amp2_e = hc_es**2 + hc_ec**2
-        amp2_p = hc_ps**2 + hc_pc**2
-        cos2_chi_e = hc_es**2 / amp2_e
-        cos2_chi_p = hc_ps**2 / amp2_p
+        self.amp2_e = hc_es**2 + hc_ec**2
+        self.amp2_p = hc_ps**2 + hc_pc**2
+        self.cos2_chi_e = hc_es**2 / self.amp2_e
+        self.cos2_chi_p = hc_ps**2 / self.amp2_p
+
+    def infer_d_p(self, n_samples=1000):
+        """Infer pulsar distance for all MC samples.
+
+        Optimized by not using `~astropy.units.Quantity`, but `numpy.ndarray`
+        of values in the right units.
+
+        Parameters
+        ----------
+        n_samples : int, default 1000
+            Number of samples to use in Monte Carlo error propagation.
+        """
+
+        # generate squared amplitudes and phase offsets
+        self.get_squared_phenpars(n_samples)
+
+        # convert Quantities to floats in expected units
+        sin2_i_p = 1. - (self.cos_i_p_fn((self.nmc, n_samples))**2).value
+        sin2_i_e = (np.sin(self.target.i_e)**2).value
+        v_0_e_kms = MCSimulation.v_0_e.to_value(u.km/u.s)
+        k_p_kms = self.target.k_p.to_value(u.km/u.s)
+
+        b2_e = (1. - sin2_i_e) / (1. - sin2_i_e * self.cos2_chi_e)
+        b2_p = (1. - sin2_i_p) / (1. - sin2_i_p * self.cos2_chi_p)
+        d_p_pc = (v_0_e_kms * k_p_kms / np.sqrt(self.amp2_e * self.amp2_p)
+                  * np.sqrt(b2_e * b2_p / sin2_i_p))
+
+        self.d_p_fit = d_p_pc * u.pc
+
+    def infer_sin_i_p(self, n_samples=1000):
+        """Infer sine of pulsar orbital inclination for all MC samples.
+
+        Optimized by not using `~astropy.units.Quantity`, but `numpy.ndarray`
+        of values in the right units.
+
+        Parameters
+        ----------
+        n_samples : int, default 1000
+            Number of samples to use in Monte Carlo error propagation.
+        """
+
+        # generate squared amplitudes and phase offsets
+        self.get_squared_phen(n_samples)
+
+        # convert Quantities to floats in expected units
+        d_p_pc = self.d_p_fn((self.nmc, n_samples)).to_value(u.pc)
+        sin2_i_e = (np.sin(self.target.i_e)**2).value
+        v_0_e_kms = MCSimulation.v_0_e.to_value(u.km/u.s)
+        k_p_kms = self.target.k_p.to_value(u.km/u.s)
 
         # compute sin_i_p posterior distributions of all MC instances
-        b2_e = (1. - sin2_i_e) / (1. - sin2_i_e * cos2_chi_e)
-        z2 = b2_e / (amp2_e * amp2_p) * (v_0_e_kms * k_p_kms / d_p_pc)**2
-        discrim = (1. + z2)**2 - 4. * cos2_chi_p * z2
+        b2_e = (1. - sin2_i_e) / (1. - sin2_i_e * self.cos2_chi_e)
+        z2 = (b2_e * v_0_e_kms**2 * k_p_kms**2
+              / (self.amp2_e * self.amp2_p * d_p_pc**2))
+        discrim = (1. + z2)**2 - 4. * self.cos2_chi_p * z2
         sin2_i_p = 2. * z2 / (1. + z2 + np.sqrt(discrim))
 
         self.sin_i_p_fit = np.sqrt(sin2_i_p)
