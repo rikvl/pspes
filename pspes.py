@@ -469,7 +469,7 @@ class MCSimulation(object):
         """
 
         # generate squared amplitudes and phase offsets
-        self.get_squared_phen(n_samples)
+        self.get_squared_phenpars(n_samples)
 
         # convert Quantities to floats in expected units
         d_p_pc = self.d_p_fn((self.nmc, n_samples)).to_value(u.pc)
